@@ -47,9 +47,14 @@ class Transformer(nn.Module):
     def forward(self, src, mask, query_embed, pos_embed):
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
+        # 将降维后的src转换维度[NxCxHxW]->[HWxNxC],即[2,256,24,24]->[576,2,256]
         src = src.flatten(2).permute(2, 0, 1)
+        # 将位置编码转换维度[NxCxHxW]->[HWxNxC],即[2,256,24,24]->[576,2,256]
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        # 词嵌入向量由[num_embeddings, embedding_dim]->[num_embeddings, N, embedding_dim]
+        # 即[100,256]->[100,2,256]
         query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+        # 将mask[2,24,24]->[2,576]
         mask = mask.flatten(1)
 
         tgt = torch.zeros_like(query_embed)
@@ -184,6 +189,16 @@ class TransformerEncoderLayer(nn.Module):
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
 
+"""
+    decoder与encoder的输入上存在差异，最初自注意力层的输入是词嵌入向量，其中q和k是一个[100,2,256]全零张量加上词嵌入向量，v则是[100,2,256]全零张量，之后进入自注意力层，这里的流程和上面encoder中是一样的。
+    自注意力层的输出将作为多头注意力层中的q，而k和v来自encoder的输出，其中k还要加上位置编码。此时k和v维度为[576,2,256]，q的维度为[100,2,256]，同样的在计算权重时，会将各个张量进行reshape，即q:[100,2,256]->[16,100,32]，k,v:[576,2,256]->[16,576,32]，再利用公式计算，最后多头注意力层的输出依旧是[100,2,256]。
+
+Raises:
+    RuntimeError: _description_
+
+Returns:
+    _type_: _description_
+"""
 class TransformerDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,

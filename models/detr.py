@@ -58,10 +58,14 @@ class DETR(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
+        # features:{mask,[2,24,24],tensor_list,[2,2048,24,24]},pos:[2,256,24,24]
         features, pos = self.backbone(samples)
-
+        # src:[2,2048,24,24], mask:[2,24,24]
         src, mask = features[-1].decompose()
         assert mask is not None
+        # 将数据送入transformer
+        # self.input_proj() 将src降维:[2,2048,24,24] -> [2,256,24,24]
+        # query_embed由nn.Embedding初始化,shape[100,256]
         hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
 
         outputs_class = self.class_embed(hs)
@@ -112,12 +116,19 @@ class SetCriterion(nn.Module):
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
 
+        # _get_src_permutation_idx(indices)返回两个值batch_idx和src_idx
+        # batch_idx得到的就是匈牙利算法得到的索引是属于哪一张图像,如tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+        # 前20属于第一张,最后两个属于第二张
+        # src_idx则表示匈牙利算法得到的横坐标信息,如tensor([14, 20, 24, 28, 32, 37, 42, 46, 50, 52, 60, 64, 67, 70, 79, 87, 91, 93, 94, 97, 6, 31])
+        # idx = (batch_idx,src_idx)
         idx = self._get_src_permutation_idx(indices)
+        # target_classes_o由targets["labels"] 根据 indices的纵坐标重新排序得到
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
+        # 根据idx将target_classes_o中的值映射到[2,100]值为91的张量中
         target_classes[idx] = target_classes_o
-
+        # 计算预测输出的类别损失
         loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
         losses = {'loss_ce': loss_ce}
 
@@ -146,8 +157,15 @@ class SetCriterion(nn.Module):
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_boxes' in outputs
+        # _get_src_permutation_idx(indices)返回两个值batch_idx和src_idx
+        # batch_idx得到的就是匈牙利算法得到的索引是属于哪一张图像,如tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+        # 前20属于第一张,最后两个属于第二张
+        # src_idx则表示匈牙利算法得到的横坐标信息,如tensor([14, 20, 24, 28, 32, 37, 42, 46, 50, 52, 60, 64, 67, 70, 79, 87, 91, 93, 94, 97, 6, 31])
+        # idx = (batch_idx,src_idx)
         idx = self._get_src_permutation_idx(indices)
+        # 根据indices的横坐标提取预测输出outputs['pred_boxes']中的对应bbox
         src_boxes = outputs['pred_boxes'][idx]
+        # target_boxes由targets['boxes'] 根据 indices的纵坐标重新排序得到
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
@@ -192,7 +210,16 @@ class SetCriterion(nn.Module):
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
+        # 输入参数indices是匹配的预测（query）索引与GT的索引，其形式在上述SetCriterion(iv)
+        # 图中注释已有说明。该方法返回一个tuple，代表所有匹配的预测结果的batch
+        # index（在当前batch中属于第几张图像）和
+        # query
+        # index（图像中的第几个query对象）。
+ 
+        # batch_idx得到的就是匈牙利算法得到的索引是属于哪一张图像,如tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+        # 前20属于第一张,最后两个属于第二张
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
+        # src_idx则表示匈牙利算法得到的横坐标信息,如tensor([14, 20, 24, 28, 32, 37, 42, 46, 50, 52, 60, 64, 67, 70, 79, 87, 91, 93, 94, 97, 6, 31])
         src_idx = torch.cat([src for (src, _) in indices])
         return batch_idx, src_idx
 
@@ -222,6 +249,10 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
+        # 假设这是其中一组输出[(tensor([14, 20, 24, 28, 32, 37, 42, 46, 50, 52, 60, 64, 67, 70, 79, 87, 91, 93,94, 97]),
+        # tensor([13,  1, 19,  0, 18,  2,  7,  4, 17,  3, 14,  6,  8,  9, 12, 11, 16, 15, 10, 5])),
+        # (tensor([ 6, 31]), tensor([1, 0]))]
+        # 其中的(14,13)即为匈牙利算法求出的第一张图像中最优解的横纵坐标
         indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes

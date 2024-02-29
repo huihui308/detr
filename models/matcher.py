@@ -55,30 +55,54 @@ class HungarianMatcher(nn.Module):
         bs, num_queries = outputs["pred_logits"].shape[:2]
 
         # We flatten to compute the cost matrices in a batch
+        # 将batch维度合并,out_prob shape为[200,92],out_bbox shape为[200,4],batch_size=2,num_queries=100
         out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
         # Also concat the target labels and boxes
+        # 将目标的ground truth id和bbox的batch维度合并,假设此处有22个类
+        # 即假设第一张图像有20个类,第二张图像有2个类
+        # 那么tgt_ids的shape为22,tgt_bbox的shape为[22,4]
         tgt_ids = torch.cat([v["labels"] for v in targets])
         tgt_bbox = torch.cat([v["boxes"] for v in targets])
 
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
         # The 1 is a constant that doesn't change the matching, it can be ommitted.
+        # 取出out_prob每一行对应索引中的元素,此时cost_class的shape为[200,22]
         cost_class = -out_prob[:, tgt_ids]
 
         # Compute the L1 cost between boxes
+        # 计算out_bbox和tgt_bbox的L1距离,此时cost_bbox的shape为[200,22]
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
         # Compute the giou cost betwen boxes
+        # 计算giou,此时cost_giou的shape为[200,22]
         cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
         # Final cost matrix
+        # C [200,22]->[2,100,22]
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()
-
+        # size [20,2]
         sizes = [len(v["boxes"]) for v in targets]
+        # 匈牙利算法的实现,指派最优的目标索引,输出一个二维列表,第一维是batch为0,即一个batch中第一张图像通过匈
+        # 牙利算法计算得到的最优解的横纵坐标,第二维是batch为1,即一个batch中第二张图像,后面的batch维度以此类推
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        
+        """
+        for i, c in enumerate(C.split(sizes, -1)):
+            import numpy as np
+            cost_matrix = np.asarray(c[i])
+            # print('cost_matrix:', cost_matrix)
+            row_ind, col_ind = linear_sum_assignment(c[i])
+ 
+            for (row, col) in zip(row_ind, col_ind):
+                print(row, col, '***', cost_matrix[row][col])
+        print('11:', indices)
+        """
+        
+        # 由于indices调用的是scipy.optimize库,输出的是一个numpy数组,最后输出的indices需要转换为torch tensor
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
 

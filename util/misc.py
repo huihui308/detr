@@ -322,7 +322,9 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
         tensor = torch.zeros(batch_shape, dtype=dtype, device=device)
         mask = torch.ones((b, h, w), dtype=torch.bool, device=device)
         for img, pad_img, m in zip(tensor_list, tensor, mask):
+            # 根据同一batch中最大的W和H对所有余图像进行padding
             pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
+            # 有padding的部分设为True
             m[: img.shape[1], :img.shape[2]] = False
     else:
         raise ValueError('not supported')

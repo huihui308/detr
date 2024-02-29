@@ -70,13 +70,17 @@ class BackboneBase(nn.Module):
         self.num_channels = num_channels
 
     def forward(self, tensor_list: NestedTensor):
+        # 通过self.body即resnet50获取最后一层卷积得到的张量[2,3,768,768]->[2,2048,24,24]
         xs = self.body(tensor_list.tensors)
         out: Dict[str, NestedTensor] = {}
         for name, x in xs.items():
+            # 获取原始输入的mask[2,768,768]
             m = tensor_list.mask
             assert m is not None
+            # 根据resnet50输出的wh维度进行reshape即[2,768,768]->[2,24,24]
             mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
             out[name] = NestedTensor(x, mask)
+        # 此时的输出为{mask,[2,24,24],tensor_list,[2,2048,24,24]}
         return out
 
 
@@ -98,14 +102,16 @@ class Joiner(nn.Sequential):
         super().__init__(backbone, position_embedding)
 
     def forward(self, tensor_list: NestedTensor):
+        # xs为{mask,[2,24,24],tensor_list,[2,2048,24,24]},self[0]即为Backbone中resnet50输出结果
         xs = self[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():
             out.append(x)
             # position encoding
+            # 位置编码使用的是PositionEmbeddingSine()
             pos.append(self[1](x).to(x.tensors.dtype))
-
+        # 其中out为{mask,[2,24,24],tensor_list,[2,2048,24,24]},pos为根据mask得到的PE,shape为[2,256,24,24]
         return out, pos
 
 
